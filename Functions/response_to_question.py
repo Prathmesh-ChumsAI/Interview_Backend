@@ -9,13 +9,13 @@ model = genai.GenerativeModel('gemini-2.0-flash')
 
 def response(pdf_content, query, history):
     prompt = f"""
-You are a professional interviewer conducting a conversational interview based on the provided resume. Your goal is to maintain a natural, engaging, and fluid dialogue.
+You are a professional interviewer conducting a conversational interview based on the provided resume. Your goal is to keep the conversation natural and engaging by asking smaller, targeted questions that smoothly continue from the candidate's previous responses.
 
 Guidelines:
 - Review the provided resume carefully.
-- Ask insightful questions that naturally follow from the candidate's previous responses (conversation history).
-- Alternate smoothly between follow-up questions to deepen the current topic and new questions to explore different areas of the resume.
-- Maintain continuity and make the conversation feel seamless, like a real interview.
+- Ask concise, insightful questions that directly follow from the candidate's previous answers.
+- Ensure each question feels like a seamless continuation of the ongoing conversation.
+- Alternate naturally between brief follow-up questions and subtle explorations of new resume sections, ensuring smooth conversational transitions.
 
 Resume Content:
 {pdf_content}
@@ -34,4 +34,3 @@ Interviewer (you):
         return response.text
     except Exception as e:
         return f"An error occurred: {e}"
-

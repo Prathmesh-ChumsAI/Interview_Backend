@@ -15,7 +15,6 @@ from Functions.extract_text_from_pdf import extract_text_from_bytes  # Import yo
 from Functions.create_analysis_to_chats import generate_scorecard  # Import your scorecard generation function
 from cloudinary import uploader
 import cloudinary
-# Initialize FastAPI router
 router = APIRouter()
 import tempfile
   
@@ -29,7 +28,23 @@ cloudinary.config(
     api_secret=os.getenv("CLOUDINARY_API_SECRET")
 )
 
+# Build credentials from environment variables and write to a file
+credentials_json = {
+    "type": os.getenv("type"),
+    "project_id": os.getenv("project_id"),
+    "private_key_id": os.getenv("private_key_id"),
+    "private_key": os.getenv("private_key").replace('\\n', '\n'),  # Ensure correct newline handling
+    "client_email": os.getenv("client_email"),
+    "client_id": os.getenv("client_id"),
+    "auth_uri": os.getenv("auth_uri"),
+    "token_uri": os.getenv("token_uri"),
+    "auth_provider_x509_cert_url": os.getenv("auth_provider_x509_cert_url"),
+    "client_x509_cert_url": os.getenv("client_x509_cert_url"),
+    "universe_domain": os.getenv("universe_domain")
+}
 
+with open("credentials.json", "w") as f:
+    json.dump(credentials_json, f, indent=2)
 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = r"credentials.json"
 project_id = os.getenv("project_id")
 region = os.getenv("region")
@@ -105,8 +120,8 @@ async def chat(file_name: str, query: str):
     tts_client = texttospeech.TextToSpeechClient()
     synthesis_input = texttospeech.SynthesisInput(text=res)
     voice_params = texttospeech.VoiceSelectionParams(
-        language_code="en-US",
-        ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
+         language_code="en-US",  # Use the language code from the simulation data
+        name="en-US-Chirp3-HD-Charon"
     )
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3
