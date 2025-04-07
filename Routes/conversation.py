@@ -188,29 +188,30 @@ async def websocket_interview(websocket: WebSocket):
     await websocket.accept()
     file_name = None
     ping_task = None
-    
+    question_count = 0  # Count the number of questions asked
+
     try:
         # First message should contain file_name for identification
         init_data = await websocket.receive_json()
         file_name = init_data.get("file_name")
-        
+
         if not file_name:
             await websocket.send_json({"error": "No file_name provided"})
             await websocket.close()
             return
-            
+
         if file_name not in extracted_texts:
             await websocket.send_json({"error": "Extracted text for the requested file not found"})
             await websocket.close()
             return
-        
+
         if file_name not in active_connections:
             active_connections[file_name] = []
         active_connections[file_name].append(websocket)
-        
+
         if file_name not in chat_histories:
             chat_histories[file_name] = ""
-        
+
         tts_client = texttospeech.TextToSpeechClient()
         voice_params = texttospeech.VoiceSelectionParams(
             language_code="en-US",
@@ -219,7 +220,7 @@ async def websocket_interview(websocket: WebSocket):
         audio_config = texttospeech.AudioConfig(
             audio_encoding=texttospeech.AudioEncoding.MP3
         )
-        
+
         async def keepalive():
             try:
                 while True:
@@ -227,63 +228,77 @@ async def websocket_interview(websocket: WebSocket):
                     await websocket.send_json({"type": "ping"})
             except Exception:
                 pass
-        
+
         ping_task = asyncio.create_task(keepalive())
-        
+
         while True:
-            # Removed the timeout parameter here.
             data = await websocket.receive_json()
-            
+
             if data.get("type") == "pong":
                 continue
-                
+
             query = data.get("query", "")
             if not query.strip():
                 continue
-                
+
             await websocket.send_json({
                 "type": "status",
                 "status": "processing"
             })
-            
-            res = response(extracted_texts[file_name], query, chat_histories[file_name])
+
+            # Increase question counter and choose appropriate response function
+            question_count += 1
+            if question_count < 10:
+                res = response(extracted_texts[file_name], query, chat_histories[file_name])
+            else:
+                res = end_response(extracted_texts[file_name], query, chat_histories[file_name])
+
             chat_histories[file_name] += f"User: {query}\nAssistant: {res}\n"
-            
+
             synthesis_input = texttospeech.SynthesisInput(text=res)
             synthesis_response = tts_client.synthesize_speech(
                 input=synthesis_input, 
                 voice=voice_params, 
                 audio_config=audio_config
             )
-            
+
             audio_base64 = base64.b64encode(synthesis_response.audio_content).decode("utf-8")
             audio_url = await upload_audio_to_cloudinary(audio_base64)
-            
-            await websocket.send_json({
+
+            # Build the response message and include the finished flag on the 10th question.
+            message = {
                 "type": "response",
                 "response": res,
                 "audio": audio_url
-            })
-            
+            }
+            if question_count == 10:
+                message["finished"] = True
+
+            await websocket.send_json(message)
+
+            # If finished, break the loop so no further queries are processed.
+            if question_count == 10:
+                break
+
     except asyncio.TimeoutError:
         try:
             await websocket.send_json({"error": "Connection timed out due to inactivity"})
         except:
             pass
-            
+
     except WebSocketDisconnect:
         if file_name and file_name in active_connections and websocket in active_connections[file_name]:
             active_connections[file_name].remove(websocket)
             if not active_connections[file_name]:
                 del active_connections[file_name]
-                
+
     except Exception as e:
         error_message = f"Error: {str(e)}"
         try:
             await websocket.send_json({"error": error_message})
         except:
             pass
-            
+
     finally:
         if ping_task:
             ping_task.cancel()
@@ -291,7 +306,6 @@ async def websocket_interview(websocket: WebSocket):
                 await ping_task
             except asyncio.CancelledError:
                 pass
-
 
 @router.delete("/end_chat")
 async def end_chat(file_name: str):
@@ -332,7 +346,6 @@ async def end_chat(file_name: str):
 
 
 
-# Endpoint to analyze the interview conversation using hardcoded evaluation criteria
 @router.post("/analyze_interview")
 async def analyze_interview(file_name: str):
     if file_name not in chat_histories:
@@ -340,8 +353,11 @@ async def analyze_interview(file_name: str):
     
     # Convert stored chat history string into a structured conversation transcript
     conversation_history = chat_histories[file_name]
+    print(conversation_history)
     messages = []
-    lines = conversation_history.strip().split("\n")
+    # Filter out any empty lines caused by trailing newlines
+    lines = [line for line in conversation_history.strip().split("\n") if line]
+    
     for i in range(0, len(lines), 2):
         if i + 1 < len(lines):
             user_line = lines[i]

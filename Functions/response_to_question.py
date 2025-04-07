@@ -43,15 +43,10 @@ Interviewer (you):
         return response.text
     except Exception as e:
         return f"An error occurred: {e}"
+    
 def end_response(pdf_content, query, history):
     prompt = f"""
-You are a highly professional interviewer concluding a **challenging and insightful** interview based on the candidate's resume. Your goal is to **end the conversation gracefully** by summarizing key points, providing constructive feedback, and thanking the candidate for their time.
-
-Guidelines:
-- Reflect briefly on the candidate's performance and highlight any strengths or notable answers.
-- Provide polite and professional feedback or suggestions for improvement if appropriate.
-- End the conversation on a positive and respectful note.
-- Thank the candidate for participating and let them know what the next steps might be (optional).
+You are a professional interviewer concluding an interview. End the conversation in no more than 20 words, stating that we will contact you for the next round and thanking you.
 
 Resume Content:
 {pdf_content}
@@ -64,7 +59,6 @@ Candidate's Latest Response:
 
 Interviewer (you):
 """
-
     try:
         response = model.generate_content(prompt, generation_config=genai.GenerationConfig(temperature=0.7))
         return response.text
