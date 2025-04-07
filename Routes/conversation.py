@@ -315,9 +315,10 @@ async def end_chat(file_name: str):
     
     # Convert stored chat history string into a structured conversation transcript
     conversation_history = chat_histories[file_name]
+    print('the conversation history',conversation_history)
     messages = []
     lines = conversation_history.strip().split("\n")
-    for i in range(0, len(lines), 2):
+    for i in range(0, len(lines)):
         if i + 1 < len(lines):
             user_line = lines[i]
             assistant_line = lines[i + 1]
@@ -332,10 +333,10 @@ async def end_chat(file_name: str):
     result = generate_scorecard(conversation)
     
     # Clear the stored data for the file from both dictionaries
-    if file_name in extracted_texts:
-        del extracted_texts[file_name]
-    if file_name in chat_histories:
-        del chat_histories[file_name]
+    # if file_name in extracted_texts:
+    #     del extracted_texts[file_name]
+    # if file_name in chat_histories:
+    #     del chat_histories[file_name]
     
     # Return the analysis result
     return result,conversation
