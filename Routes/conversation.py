@@ -5,16 +5,19 @@ import base64
 import fitz  # PyMuPDF
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from fastapi.concurrency import run_in_threadpool
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from google.cloud import texttospeech
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 from typing import List
 from anthropic import AnthropicVertex  # Ensure your AnthropicVertex package is installed and configured
-from Functions.response_to_question import response  # Import your response function
+from Functions.response_to_question import response,end_response  # Import your response function
 from Functions.extract_text_from_pdf import extract_text_from_bytes  # Import your PDF extraction function
 from Functions.create_analysis_to_chats import generate_scorecard  # Import your scorecard generation function
 from cloudinary import uploader
 import cloudinary
+import asyncio
+from typing import Dict, List
 router = APIRouter()
 import tempfile
   
@@ -27,6 +30,8 @@ cloudinary.config(
     api_key=os.getenv("CLOUDINARY_API_KEY"),
     api_secret=os.getenv("CLOUDINARY_API_SECRET")
 )
+
+active_connections: Dict[str, List[WebSocket]] = {}  # Track active WebSocket connections by file_name
 
 # Build credentials from environment variables and write to a file
 credentials_json = {
@@ -102,45 +107,190 @@ async def upload_pdf(file: UploadFile = File(...)):
     return {"message": "File successfully processed", "file": file.filename}
 
 # Endpoint for chat: uses a response function (assumed to be defined elsewhere)
-@router.get("/chat")
-async def chat(file_name: str, query: str):
-    if file_name not in extracted_texts:
-        raise HTTPException(status_code=404, detail="Extracted text for the requested file not found.")
+# @router.get("/chat")
+# async def chat(file_name: str, query: str):
+#     if file_name not in extracted_texts:
+#         raise HTTPException(status_code=404, detail="Extracted text for the requested file not found.")
     
-    # Retrieve the current conversation history for the file
-    history = chat_histories.get(file_name, "")
+#     # Retrieve the current conversation history for the file
+#     history = chat_histories.get(file_name, "")
     
-    # Generate a response using your interview model (this function should be defined/imported)
-    res = response(extracted_texts[file_name], query, history)
+#     # Generate a response using your interview model (this function should be defined/imported)
+#     res = response(extracted_texts[file_name], query, history)
     
-    # Update the conversation history with the new exchange
-    chat_histories[file_name] = history + f"User: {query}\nAssistant: {res}\n"
+#     # Update the conversation history with the new exchange
+#     chat_histories[file_name] = history + f"User: {query}\nAssistant: {res}\n"
     
-    # Convert text response to audio using Google TTS
+#     # Convert text response to audio using Google TTS
+#     tts_client = texttospeech.TextToSpeechClient()
+#     synthesis_input = texttospeech.SynthesisInput(text=res)
+#     voice_params = texttospeech.VoiceSelectionParams(
+#          language_code="en-US",  # Use the language code from the simulation data
+#         name="en-US-Chirp3-HD-Charon"
+#     )
+#     audio_config = texttospeech.AudioConfig(
+#         audio_encoding=texttospeech.AudioEncoding.MP3
+#     )
+#     synthesis_response = tts_client.synthesize_speech(
+#         input=synthesis_input,
+#         voice=voice_params,
+#         audio_config=audio_config
+#     )
+#     # Encode audio in base64 for JSON response
+#     audio_base64 = base64.b64encode(synthesis_response.audio_content).decode("utf-8")
+#     url=await upload_audio_to_cloudinary(audio_base64)
+#     print(url)
+    
+#     return {
+#         "response": res,
+#         "history": chat_histories[file_name],
+#         "audio": url
+#     }
+
+@router.get("/start")
+async def start():
+    # Define your welcome message
+    welcome_message = "Hello My name is Alex I am the interviewer for you today.Lets start with the breif introduction about yourself?"
+    
+    # Initialize the Text-to-Speech client
     tts_client = texttospeech.TextToSpeechClient()
-    synthesis_input = texttospeech.SynthesisInput(text=res)
+    
+    # Set up the voice parameters and audio configuration
     voice_params = texttospeech.VoiceSelectionParams(
-         language_code="en-US",  # Use the language code from the simulation data
+        language_code="en-US",
         name="en-US-Chirp3-HD-Charon"
     )
     audio_config = texttospeech.AudioConfig(
         audio_encoding=texttospeech.AudioEncoding.MP3
     )
+    
+    # Prepare the synthesis input
+    synthesis_input = texttospeech.SynthesisInput(text=welcome_message)
+    
+    # Synthesize speech from the welcome message text
     synthesis_response = tts_client.synthesize_speech(
-        input=synthesis_input,
-        voice=voice_params,
+        input=synthesis_input, 
+        voice=voice_params, 
         audio_config=audio_config
     )
-    # Encode audio in base64 for JSON response
-    audio_base64 = base64.b64encode(synthesis_response.audio_content).decode("utf-8")
-    url=await upload_audio_to_cloudinary(audio_base64)
-    print(url)
     
-    return {
-        "response": res,
-        "history": chat_histories[file_name],
-        "audio": url
-    }
+    # Encode the audio content to base64 so it can be sent in a JSON response
+    audio_base64 = base64.b64encode(synthesis_response.audio_content).decode("utf-8")
+    
+    # Upload the audio to Cloudinary (or another storage service) to obtain a URL
+    audio_url = await upload_audio_to_cloudinary(audio_base64)
+    
+    # Return the welcome message along with the URL to the audio
+    return {"message": welcome_message, "audio": audio_url}
+
+@router.websocket("/ws/chat")
+async def websocket_interview(websocket: WebSocket):
+    await websocket.accept()
+    file_name = None
+    ping_task = None
+    
+    try:
+        # First message should contain file_name for identification
+        init_data = await websocket.receive_json()
+        file_name = init_data.get("file_name")
+        
+        if not file_name:
+            await websocket.send_json({"error": "No file_name provided"})
+            await websocket.close()
+            return
+            
+        if file_name not in extracted_texts:
+            await websocket.send_json({"error": "Extracted text for the requested file not found"})
+            await websocket.close()
+            return
+        
+        if file_name not in active_connections:
+            active_connections[file_name] = []
+        active_connections[file_name].append(websocket)
+        
+        if file_name not in chat_histories:
+            chat_histories[file_name] = ""
+        
+        tts_client = texttospeech.TextToSpeechClient()
+        voice_params = texttospeech.VoiceSelectionParams(
+            language_code="en-US",
+            name="en-US-Chirp3-HD-Charon"
+        )
+        audio_config = texttospeech.AudioConfig(
+            audio_encoding=texttospeech.AudioEncoding.MP3
+        )
+        
+        async def keepalive():
+            try:
+                while True:
+                    await asyncio.sleep(30)  # Send ping every 30 seconds
+                    await websocket.send_json({"type": "ping"})
+            except Exception:
+                pass
+        
+        ping_task = asyncio.create_task(keepalive())
+        
+        while True:
+            # Removed the timeout parameter here.
+            data = await websocket.receive_json()
+            
+            if data.get("type") == "pong":
+                continue
+                
+            query = data.get("query", "")
+            if not query.strip():
+                continue
+                
+            await websocket.send_json({
+                "type": "status",
+                "status": "processing"
+            })
+            
+            res = response(extracted_texts[file_name], query, chat_histories[file_name])
+            chat_histories[file_name] += f"User: {query}\nAssistant: {res}\n"
+            
+            synthesis_input = texttospeech.SynthesisInput(text=res)
+            synthesis_response = tts_client.synthesize_speech(
+                input=synthesis_input, 
+                voice=voice_params, 
+                audio_config=audio_config
+            )
+            
+            audio_base64 = base64.b64encode(synthesis_response.audio_content).decode("utf-8")
+            audio_url = await upload_audio_to_cloudinary(audio_base64)
+            
+            await websocket.send_json({
+                "type": "response",
+                "response": res,
+                "audio": audio_url
+            })
+            
+    except asyncio.TimeoutError:
+        try:
+            await websocket.send_json({"error": "Connection timed out due to inactivity"})
+        except:
+            pass
+            
+    except WebSocketDisconnect:
+        if file_name and file_name in active_connections and websocket in active_connections[file_name]:
+            active_connections[file_name].remove(websocket)
+            if not active_connections[file_name]:
+                del active_connections[file_name]
+                
+    except Exception as e:
+        error_message = f"Error: {str(e)}"
+        try:
+            await websocket.send_json({"error": error_message})
+        except:
+            pass
+            
+    finally:
+        if ping_task:
+            ping_task.cancel()
+            try:
+                await ping_task
+            except asyncio.CancelledError:
+                pass
 
 
 @router.delete("/end_chat")
