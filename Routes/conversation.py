@@ -3,7 +3,7 @@ import re
 import json
 import base64
 import fitz  # PyMuPDF
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException,Form
 from fastapi.concurrency import run_in_threadpool
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from google.cloud import texttospeech
@@ -14,6 +14,7 @@ from anthropic import AnthropicVertex  # Ensure your AnthropicVertex package is 
 from Functions.response_to_question import response,end_response  # Import your response function
 from Functions.extract_text_from_pdf import extract_text_from_bytes  # Import your PDF extraction function
 from Functions.create_analysis_to_chats import generate_scorecard  # Import your scorecard generation function
+from Functions.analyse_video import analyze_video_emotion_from_cloud_url
 from cloudinary import uploader
 import cloudinary
 import asyncio
@@ -315,7 +316,7 @@ async def end_chat(file_name: str):
     
     # Convert stored chat history string into a structured conversation transcript
     conversation_history = chat_histories[file_name]
-    print('the conversation history',conversation_history)
+    print('the conversation history', conversation_history)
     messages = []
     lines = conversation_history.strip().split("\n")
     for i in range(0, len(lines)):
@@ -329,17 +330,31 @@ async def end_chat(file_name: str):
     
     conversation = {"messages": messages, "_id": file_name}
     
+    # First check if we have a stored URL from the upload endpoint
+    video_url = None
+    if hasattr(upload_video, "video_urls") and file_name in upload_video.video_urls:
+        video_url = upload_video.video_urls[file_name]
+    else:
+        # Fall back to checking local files
+        video_uploads_dir = "video_uploads"
+        if os.path.exists(video_uploads_dir) and os.path.isdir(video_uploads_dir):
+            video_files = [f for f in os.listdir(video_uploads_dir) if f.startswith(f"{file_name}-interview")]
+            
+            if video_files:
+                # Use the most recent video file if multiple exist
+                latest_video = sorted(video_files, key=lambda x: os.path.getmtime(os.path.join(video_uploads_dir, x)), reverse=True)[0]
+                video_url = f"/video_uploads/{latest_video}"  # Use relative URL for static files
+    
     # Generate the interview evaluation scorecard using hardcoded criteria
     result = generate_scorecard(conversation)
     
-    # Clear the stored data for the file from both dictionaries
-    # if file_name in extracted_texts:
-    #     del extracted_texts[file_name]
-    # if file_name in chat_histories:
-    #     del chat_histories[file_name]
+    # Add video URL to the result if available
+    if video_url:
+        emotion_data=analyze_video_emotion_from_cloud_url(video_url)
+
     
-    # Return the analysis result
-    return result,conversation
+    # Return the analysis result with the conversation
+    return result, conversation,emotion_data
 
 
 # --- Interview Analysis Code with Hardcoded Evaluations and Strict JSON Output ---
@@ -373,3 +388,64 @@ async def analyze_interview(file_name: str):
     # Generate the interview evaluation scorecard using hardcoded criteria
     result = generate_scorecard(conversation)
     return result
+@router.post("/upload-video")
+async def upload_video(
+    file_name: str = Form(...),
+    video: UploadFile = File(...)
+):
+    try:
+        # Create directory if it doesn't exist
+        video_uploads_dir = "video_uploads"
+        os.makedirs(video_uploads_dir, exist_ok=True)
+        
+        # Save the video file locally
+        file_path = os.path.join(video_uploads_dir, f"{file_name}-interview.webm")
+        contents = await video.read()
+        
+        with open(file_path, "wb") as f:
+            f.write(contents)
+        
+        # Upload to Cloudinary for storage
+        try:
+            upload_result = cloudinary.uploader.upload(
+                file_path,
+                resource_type="video",
+                folder="interview_recordings",
+                public_id=f"{file_name}-interview"
+            )
+            
+            video_url = upload_result["secure_url"]
+        except Exception as cloud_error:
+            print(f"Cloudinary upload error: {str(cloud_error)}")
+            # If Cloudinary fails, we'll still keep the local file and use a local URL
+            video_url = f"http://localhost:8000/video_uploads/{file_name}-interview.webm"
+            
+            # Store this URL somewhere accessible to the end_chat function
+            # For now, let's add it to a new dictionary
+            if not hasattr(upload_video, "video_urls"):
+                upload_video.video_urls = {}
+            upload_video.video_urls[file_name] = video_url
+            
+            # Don't delete the local file if Cloudinary upload failed
+            return {
+                "message": "Video saved locally",
+                "video_url": video_url,
+                "note": "Cloudinary upload failed, using local storage"
+            }
+        
+        # Store the URL for access by the end_chat function
+        if not hasattr(upload_video, "video_urls"):
+            upload_video.video_urls = {}
+        upload_video.video_urls[file_name] = video_url
+        
+        # Clean up local file after successful upload
+        if os.path.exists(file_path):
+            os.remove(file_path)
+        
+        return {
+            "message": "Video uploaded successfully",
+            "video_url": video_url
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error uploading video: {str(e)}")
