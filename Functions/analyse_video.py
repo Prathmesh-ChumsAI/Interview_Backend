@@ -87,7 +87,8 @@ def analyze_video_emotion_from_cloud_url(cloud_url):
             model="gemini-2.0-flash",
             contents=[video_file, prompt],
             config=types.GenerateContentConfig(
-                http_options=types.HttpOptions(timeout=60000)  # Timeout of 60 seconds
+                http_options=types.HttpOptions(timeout=60000) , # Timeout of 60 seconds,
+                max_output_tokens=8000
             )
         )
         
@@ -235,3 +236,5 @@ def clean_json_response(text):
     
     return '\n'.join(filtered_lines)
 
+data=analyze_video_emotion_from_cloud_url("https://res.cloudinary.com/dh91ceeql/video/upload/v1744129657/interview_recordings/Sahil%20Kumar%20Resume%20%282024%29.pdf-interview.webm")
+print(data)
