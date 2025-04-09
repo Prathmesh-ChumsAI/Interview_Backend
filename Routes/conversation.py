@@ -307,56 +307,76 @@ async def websocket_interview(websocket: WebSocket):
                 await ping_task
             except asyncio.CancelledError:
                 pass
+class ConversationMessage(BaseModel):
+    type: str  # should be either "assistant" or "user"
+    text: str
+from typing import Optional, List
+# Define a model for the request payload
+class ConversationPayload(BaseModel):
+    messages: List[ConversationMessage]
+    _id: Optional[str] = None  # optional identifier if needed for video lookup
 
 @router.delete("/end_chat")
-async def end_chat(file_name: str):
-    # Ensure the chat history exists for the requested file
-    if file_name not in chat_histories:
-        raise HTTPException(status_code=404, detail="Chat history for the requested file not found.")
-    
-    # Convert stored chat history string into a structured conversation transcript
-    conversation_history = chat_histories[file_name]
-    print('the conversation history', conversation_history)
+async def end_chat(payload: ConversationPayload):
+    conversation_data = payload.messages.copy()  # copy list to avoid mutating the original
     messages = []
-    lines = conversation_history.strip().split("\n")
-    for i in range(0, len(lines)):
-        if i + 1 < len(lines):
-            user_line = lines[i]
-            assistant_line = lines[i + 1]
-            if user_line.startswith("User: ") and assistant_line.startswith("Assistant: "):
-                user_text = user_line[len("User: "):].strip()
-                assistant_text = assistant_line[len("Assistant: "):].strip()
-                messages.append({"user": user_text, "response": assistant_text})
     
-    conversation = {"messages": messages, "_id": file_name}
+    # If the conversation starts with an assistant message (e.g. welcome or introduction),
+    # you might want to store it or treat it separately.
+    intro_message = None
+    if conversation_data and conversation_data[0].type.lower() == "assistant":
+        intro_message = conversation_data.pop(0).text  # remove intro message
     
-    # First check if we have a stored URL from the upload endpoint
+    # Pair up messages: the logic here assumes messages now alternate with a user message followed by the assistant reply.
+    # Adjust the pairing logic if your conversation structure is different.
+    for i in range(0, len(conversation_data), 2):
+        if i + 1 < len(conversation_data):
+            user_msg = conversation_data[i]
+            assistant_msg = conversation_data[i + 1]
+            if user_msg.type.lower() == "user" and assistant_msg.type.lower() == "assistant":
+                messages.append({
+                    "user": user_msg.text,
+                    "response": assistant_msg.text
+                })
+            else:
+                # Optionally, you could log or raise an error if the expected order is not maintained.
+                pass
+
+    # Prepare the internal conversation structure for analysis
+    conversation = {"messages": messages}
+    if payload._id:
+        conversation["_id"] = payload._id
+
+    # Retrieve a video URL if an identifier (_id) is provided.
     video_url = None
-    if hasattr(upload_video, "video_urls") and file_name in upload_video.video_urls:
-        video_url = upload_video.video_urls[file_name]
-    else:
-        # Fall back to checking local files
-        video_uploads_dir = "video_uploads"
-        if os.path.exists(video_uploads_dir) and os.path.isdir(video_uploads_dir):
-            video_files = [f for f in os.listdir(video_uploads_dir) if f.startswith(f"{file_name}-interview")]
-            
-            if video_files:
-                # Use the most recent video file if multiple exist
-                latest_video = sorted(video_files, key=lambda x: os.path.getmtime(os.path.join(video_uploads_dir, x)), reverse=True)[0]
-                video_url = f"/video_uploads/{latest_video}"  # Use relative URL for static files
+    if payload._id:
+        # Check if there's a stored URL using the upload_video module (if available)
+        if hasattr(upload_video, "video_urls") and payload._id in upload_video.video_urls:
+            video_url = upload_video.video_urls[payload._id]
+        else:
+            # Fall back to checking local files in the 'video_uploads' directory.
+            video_uploads_dir = "video_uploads"
+            if os.path.exists(video_uploads_dir) and os.path.isdir(video_uploads_dir):
+                video_files = [
+                    f for f in os.listdir(video_uploads_dir)
+                    if f.startswith(f"{payload._id}-interview")
+                ]
+                if video_files:
+                    latest_video = sorted(
+                        video_files,
+                        key=lambda x: os.path.getmtime(os.path.join(video_uploads_dir, x)),
+                        reverse=True
+                    )[0]
+                    video_url = f"/video_uploads/{latest_video}"
     
-    # Generate the interview evaluation scorecard using hardcoded criteria
+    # Generate the interview evaluation scorecard using the conversation transcript.
     result = generate_scorecard(conversation)
     
-    # Add video URL to the result if available
+    emotion_data = None
     if video_url:
-        emotion_data=analyze_video_emotion_from_cloud_url(video_url)
+        emotion_data = analyze_video_emotion_from_cloud_url(video_url)
 
-    
-    # Return the analysis result with the conversation
-    return result, conversation,emotion_data
-
-
+    return result, conversation, emotion_data
 # --- Interview Analysis Code with Hardcoded Evaluations and Strict JSON Output ---
 
 
