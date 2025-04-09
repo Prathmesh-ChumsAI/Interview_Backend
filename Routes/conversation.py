@@ -89,7 +89,7 @@ async def upload_audio_to_cloudinary(audio_base64: str) -> str:
 extracted_texts = {}
 chat_histories = {}
 
-
+video_urls = {}
 
 # Endpoint to upload a PDF file and extract its text
 @router.post("/upload")
@@ -314,21 +314,19 @@ from typing import Optional, List
 # Define a model for the request payload
 class ConversationPayload(BaseModel):
     messages: List[ConversationMessage]
-    _id: Optional[str] = None  # optional identifier if needed for video lookup
-
+    id: Optional[str] = None  # optional identifier if needed for video lookup
+# Modified end_chat function to use the global video_urls dictionary
 @router.delete("/end_chat")
 async def end_chat(payload: ConversationPayload):
-    conversation_data = payload.messages.copy()  # copy list to avoid mutating the original
+    conversation_data = payload.messages.copy()
     messages = []
     
-    # If the conversation starts with an assistant message (e.g. welcome or introduction),
-    # you might want to store it or treat it separately.
+    # Handle intro message if present
     intro_message = None
     if conversation_data and conversation_data[0].type.lower() == "assistant":
-        intro_message = conversation_data.pop(0).text  # remove intro message
+        intro_message = conversation_data.pop(0).text
     
-    # Pair up messages: the logic here assumes messages now alternate with a user message followed by the assistant reply.
-    # Adjust the pairing logic if your conversation structure is different.
+    # Pair up messages
     for i in range(0, len(conversation_data), 2):
         if i + 1 < len(conversation_data):
             user_msg = conversation_data[i]
@@ -338,28 +336,30 @@ async def end_chat(payload: ConversationPayload):
                     "user": user_msg.text,
                     "response": assistant_msg.text
                 })
-            else:
-                # Optionally, you could log or raise an error if the expected order is not maintained.
-                pass
-
-    # Prepare the internal conversation structure for analysis
+    
+    # Prepare conversation structure for analysis
     conversation = {"messages": messages}
-    if payload._id:
-        conversation["_id"] = payload._id
-
-    # Retrieve a video URL if an identifier (_id) is provided.
+    print(' Payload ',payload.id)
+    print(payload)
+    if payload.id:
+        conversation["_id"] = payload.id
+    
+    # Retrieve video URL from global dictionary
     video_url = None
-    if payload._id:
-        # Check if there's a stored URL using the upload_video module (if available)
-        if hasattr(upload_video, "video_urls") and payload._id in upload_video.video_urls:
-            video_url = upload_video.video_urls[payload._id]
-        else:
-            # Fall back to checking local files in the 'video_uploads' directory.
+    if payload.id:
+        # Access the video URL from the global dictionary
+        global video_urls
+        print("Video urls",video_urls)
+        video_url = video_urls.get(payload.id)
+        print(f"Found video URL from global dictionary: {video_url}")
+        
+        # Fall back to checking local files if URL not found in global dict
+        if not video_url:
             video_uploads_dir = "video_uploads"
             if os.path.exists(video_uploads_dir) and os.path.isdir(video_uploads_dir):
                 video_files = [
                     f for f in os.listdir(video_uploads_dir)
-                    if f.startswith(f"{payload._id}-interview")
+                    if f.startswith(f"{payload.id}-interview")
                 ]
                 if video_files:
                     latest_video = sorted(
@@ -368,8 +368,11 @@ async def end_chat(payload: ConversationPayload):
                         reverse=True
                     )[0]
                     video_url = f"/video_uploads/{latest_video}"
+                    print(f"Found video URL from local file: {video_url}")
     
-    # Generate the interview evaluation scorecard using the conversation transcript.
+    print(f"Using video URL: {video_url}")
+    
+    # Generate interview evaluation scorecard
     result = generate_scorecard(conversation)
     
     emotion_data = None
@@ -377,8 +380,6 @@ async def end_chat(payload: ConversationPayload):
         emotion_data = analyze_video_emotion_from_cloud_url(video_url)
 
     return result, conversation, emotion_data
-# --- Interview Analysis Code with Hardcoded Evaluations and Strict JSON Output ---
-
 
 
 
@@ -440,12 +441,6 @@ async def upload_video(
             # If Cloudinary fails, we'll still keep the local file and use a local URL
             video_url = f"http://localhost:8000/video_uploads/{file_name}-interview.webm"
             
-            # Store this URL somewhere accessible to the end_chat function
-            # For now, let's add it to a new dictionary
-            if not hasattr(upload_video, "video_urls"):
-                upload_video.video_urls = {}
-            upload_video.video_urls[file_name] = video_url
-            
             # Don't delete the local file if Cloudinary upload failed
             return {
                 "message": "Video saved locally",
@@ -453,10 +448,10 @@ async def upload_video(
                 "note": "Cloudinary upload failed, using local storage"
             }
         
-        # Store the URL for access by the end_chat function
-        if not hasattr(upload_video, "video_urls"):
-            upload_video.video_urls = {}
-        upload_video.video_urls[file_name] = video_url
+        # Store the URL in the global dictionary
+        global video_urls
+        video_urls[file_name] = video_url
+        print(f"Stored video URL: {file_name} -> {video_url}")
         
         # Clean up local file after successful upload
         if os.path.exists(file_path):
